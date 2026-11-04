@@ -36,10 +36,12 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
+CLIENT = os.environ.get("BU_CLIENT", "")  # set by run.py: one tab per agent session
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
+    if CLIENT: req = {**req, "client": CLIENT}
     c = ipc.connect(NAME, timeout=5.0)
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""

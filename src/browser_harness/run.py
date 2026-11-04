@@ -7,6 +7,22 @@ if hasattr(sys.stdout, "reconfigure"):
     try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
 
+def _session_client():
+    """Tag every call with the agent session, so the shared daemon keeps one tab per agent.
+    All agents share one Chrome connection, so Chrome asks "Allow remote debugging?"
+    once per daemon start, not once per agent. An explicit BU_CLIENT wins."""
+    if os.environ.get("BU_CLIENT"):
+        return
+    import re
+    for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "T3CODE_THREAD_ID"):
+        value = re.sub(r"[^A-Za-z0-9_-]", "", os.environ.get(key, ""))[:60]
+        if value:
+            os.environ["BU_CLIENT"] = value
+            return
+
+
+_session_client()
+
 from .admin import (
     _version,
     ensure_daemon,

@@ -11,14 +11,15 @@ Direct browser control via CDP. For task-specific edits, use `agent-workspace/ag
 
 ```bash
 browser-harness -c '
-new_tab("https://docs.browser-use.com")
+claim_tab()   # this session's own tab, never focused; see agent-workspace/agent_helpers.py
+goto_url("http://localhost:9004/sources")
 wait_for_load()
 print(page_info())
 '
 ```
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
-- First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
+- On this machine, start every call with claim_tab() and call release_tab() when done. Never switch_tab() or new_tab(): both bring a tab to the front and steal focus. Follow "Browser testing" in ~/.claude/CLAUDE.md.
 
 Available interaction skills:
 - interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix

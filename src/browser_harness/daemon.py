@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
 
@@ -58,6 +59,37 @@ PROFILES = [
     Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
 ]
+
+
+def _ws_from_devtools_active_port_text(raw_text: str) -> str | None:
+    """Chrome M144+ inspect-page remote debugging: HTTP /json/version is 404; use DevToolsActivePort line 2."""
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
+        return None
+    parts = raw_text.split("\n", 1)
+    port = parts[0].strip()
+    if not port.isdigit():
+        return None
+    if len(parts) < 2:
+        return None
+    path = parts[1].strip()
+    if path.startswith("/devtools/"):
+        return f"ws://127.0.0.1:{port}{path}"
+    return None
+
+
+def _ws_from_profiles_for_port(want_port: str) -> str | None:
+    for base in PROFILES:
+        try:
+            raw = (base / "DevToolsActivePort").read_text()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        ws = _ws_from_devtools_active_port_text(raw)
+        if ws and ws.startswith(f"ws://127.0.0.1:{want_port}/"):
+            return ws
+    return None
+
+
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
@@ -84,28 +116,42 @@ def get_ws_url():
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
         deadline = time.time() + 30
         last_err = None
+        parsed = urlparse(url)
+        port_hint = str(parsed.port or (443 if parsed.scheme == "https" else 80))
         while time.time() < deadline:
             try:
                 return json.loads(urllib.request.urlopen(f"{url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if e.code == 404:
+                    if ws := _ws_from_profiles_for_port(port_hint):
+                        return ws
+                time.sleep(1)
             except Exception as e:
                 last_err = e
                 time.sleep(1)
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
     for base in PROFILES:
         try:
-            port = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)[0].strip()
+            raw_port_file = (base / "DevToolsActivePort").read_text()
         except (FileNotFoundError, NotADirectoryError):
             continue
-        # Resolve the live WS URL via /json/version instead of trusting the path stored
-        # alongside the port in DevToolsActivePort: if Chrome was previously launched
-        # with a different --user-data-dir on the same port, that file is left behind
-        # with a stale browser UUID and the WS upgrade returns 404.
+        port = raw_port_file.strip().split("\n", 1)[0].strip()
+        ws_fallback = _ws_from_devtools_active_port_text(raw_port_file)
+        # Prefer /json/version when Chrome still serves it (avoids stale UUID in the file).
+        # Chrome M144+ inspect-page mode: /json/version is 404 — use DevToolsActivePort line 2.
         deadline = time.time() + 30
         while time.time() < deadline:
             try:
                 return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+            except urllib.error.HTTPError as e:
+                if e.code == 404 and ws_fallback:
+                    return ws_fallback
+                time.sleep(1)
             except (OSError, KeyError, ValueError):
                 time.sleep(1)
+        if ws_fallback:
+            return ws_fallback
         raise RuntimeError(
             f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
         )
@@ -113,6 +159,11 @@ def get_ws_url():
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                if ws := _ws_from_profiles_for_port(str(probe_port)):
+                    return ws
+            continue
         except (OSError, KeyError, ValueError):
             continue
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
@@ -143,8 +194,9 @@ class Daemon:
         self.session = None
         self.target_id = None
         self.events = deque(maxlen=BUF)
-        self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self.clients = {}  # client -> {session, target_id}: each agent keeps its own tab on one connection
+        self.dialogs = {}  # session_id -> open JS dialog
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -191,25 +243,40 @@ class Daemon:
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
-                self.dialog = params
+                self.dialogs[session_id] = params
             elif method == "Page.javascriptDialogClosed":
-                self.dialog = None
+                self.dialogs.pop(session_id, None)
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)))
+                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=session_id), timeout=2)))
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
+    def _state(self, client):
+        """Tab state for one client, so agents on one connection never share a current tab.
+        A new client starts on the default tab. No client means the default tab itself."""
+        if not client:
+            return None
+        return self.clients.setdefault(client, {"session": self.session, "target_id": self.target_id})
+
     async def handle(self, req):
+        st = self._state(req.get("client"))
+        get = (lambda k: st[k]) if st is not None else (lambda k: getattr(self, k))
+        def put(k, v):
+            if st is not None: st[k] = v
+            else: setattr(self, k, v)
+
         meta = req.get("meta")
         if meta == "drain_events":
-            out = list(self.events); self.events.clear()
-            return {"events": out}
-        if meta == "session":     return {"session_id": self.session}
+            mine = [e for e in self.events if e["session_id"] in (get("session"), None)]
+            for e in mine: self.events.remove(e)
+            return {"events": mine}
+        if meta == "session":     return {"session_id": get("session")}
         if meta == "connection_status":
-            if not self.target_id:
+            target_id = get("target_id")
+            if not target_id:
                 return {"error": "not_attached"}
             try:
-                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": target_id}))["targetInfo"]
             except Exception:
                 return {"error": "cdp_disconnected"}
             page = None
@@ -219,33 +286,35 @@ class Daemon:
                     "title": info.get("title") or "(untitled)",
                     "url": info.get("url") or "",
                 }
-            return {"target_id": self.target_id, "session_id": self.session, "page": page}
+            return {"target_id": target_id, "session_id": get("session"), "page": page}
         if meta == "set_session":
-            self.session = req.get("session_id")
-            self.target_id = req.get("target_id") or self.target_id
+            sid = req.get("session_id")
+            put("session", sid)
+            put("target_id", req.get("target_id") or get("target_id"))
             try:
-                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
-                await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
+                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=sid), timeout=3)
+                await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=sid), timeout=2)
             except Exception: pass
-            return {"session_id": self.session}
-        if meta == "pending_dialog": return {"dialog": self.dialog}
+            return {"session_id": sid}
+        if meta == "pending_dialog": return {"dialog": self.dialogs.get(get("session"))}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
         method = req["method"]
         params = req.get("params") or {}
         # Browser-level Target.* calls must not use a session (stale or otherwise).
-        # For everything else, explicit session in req wins; else default.
-        sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        # For everything else, explicit session in req wins; else this client's tab.
+        current = get("session")
+        sid = None if method.startswith("Target.") else (req.get("session_id") or current)
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
+            if "Session with given id not found" in msg and sid == current and sid:
                 log(f"stale session {sid}, re-attaching")
                 if await self.attach_first_page():
+                    put("session", self.session); put("target_id", self.target_id)
                     return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
             return {"error": msg}
-
 
 async def serve(d):
     async def handler(reader, writer):
