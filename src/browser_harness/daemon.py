@@ -202,6 +202,13 @@ class Daemon:
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
+        if not pages and os.environ.get("BU_NO_BLANK_PAGE"):
+            # Agent Chrome (run.py): claim_tab() opens each agent's own window, so a blank page
+            # here would only leave an unused window behind. Stay unattached until a client
+            # attaches to its own tab.
+            log("no real pages found, not creating one (BU_NO_BLANK_PAGE)")
+            self.session = self.target_id = None
+            return None
         if not pages:
             # No real pages — create one instead of attaching to omnibox popup
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]

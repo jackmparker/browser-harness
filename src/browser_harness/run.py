@@ -36,6 +36,7 @@ def _agent_chrome():
         return
     os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{AGENT_CHROME_PORT}"
     os.environ.setdefault("BU_NAME", "agents")  # its own daemon, apart from one on the user's Chrome
+    os.environ.setdefault("BU_NO_BLANK_PAGE", "1")  # claim_tab() opens the windows; no blank one at start
     import socket, subprocess, time
 
     def up():
@@ -50,7 +51,8 @@ def _agent_chrome():
     # -g: do not bring it to the front. -n: a second Chrome, separate from the user's.
     subprocess.run(["open", "-gna", "Google Chrome", "--args",
                     f"--user-data-dir={AGENT_CHROME_PROFILE}", f"--remote-debugging-port={AGENT_CHROME_PORT}",
-                    "--no-first-run", "--no-default-browser-check"], check=True)
+                    "--no-first-run", "--no-default-browser-check",
+                    "--no-startup-window"], check=True)  # no unused "New Tab" window; claim_tab() opens them
     for _ in range(100):
         if up():
             return
