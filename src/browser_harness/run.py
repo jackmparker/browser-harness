@@ -23,6 +23,44 @@ def _session_client():
 
 _session_client()
 
+# Agents drive their own Chrome, not the user's: started with remote debugging on, so Chrome never
+# asks "Allow remote debugging?", and with one profile, so new windows never land in the wrong one.
+AGENT_CHROME_PORT = 9333
+AGENT_CHROME_PROFILE = os.path.expanduser("~/.chrome-agents")
+
+
+def _agent_chrome():
+    """Points the daemon at the agent Chrome and starts that Chrome, in the background, when needed.
+    An explicit BU_CDP_URL or BU_CDP_WS wins (set BU_CDP_URL= to an empty value to use the user's Chrome)."""
+    if "BU_CDP_URL" in os.environ or os.environ.get("BU_CDP_WS"):
+        return
+    os.environ["BU_CDP_URL"] = f"http://127.0.0.1:{AGENT_CHROME_PORT}"
+    os.environ.setdefault("BU_NAME", "agents")  # its own daemon, apart from one on the user's Chrome
+    import socket, subprocess, time
+
+    def up():
+        try:
+            socket.create_connection(("127.0.0.1", AGENT_CHROME_PORT), timeout=0.5).close()
+            return True
+        except OSError:
+            return False
+
+    if up():
+        return
+    # -g: do not bring it to the front. -n: a second Chrome, separate from the user's.
+    subprocess.run(["open", "-gna", "Google Chrome", "--args",
+                    f"--user-data-dir={AGENT_CHROME_PROFILE}", f"--remote-debugging-port={AGENT_CHROME_PORT}",
+                    "--no-first-run", "--no-default-browser-check"], check=True)
+    for _ in range(100):
+        if up():
+            return
+        time.sleep(0.2)
+    sys.exit(f"browser-harness: the agent Chrome did not open port {AGENT_CHROME_PORT}")
+
+
+if sys.platform == "darwin":
+    _agent_chrome()
+
 from .admin import (
     _version,
     ensure_daemon,

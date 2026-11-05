@@ -9,7 +9,7 @@ each other's tabs. All agents share one daemon (one Chrome connection, so one
 "Allow remote debugging?" prompt). run.py tags each call with the agent session
 (BU_CLIENT), the daemon keeps a current tab per client, and claim_tab() picks it:
 
-- Each agent opens its own window in the observepoint profile, on its checkout's dev
+- Each agent opens its own window in the agent Chrome (see run.py), on its checkout's dev
   server (APP_URL, from `moonbeam-dev url`), and locks it with a lock file. The
   window opens behind the user's windows; its title starts with a label so the user
   can find it in the Window menu and watch.
@@ -157,21 +157,12 @@ def _context(target_id):
     return cdp("Target.getTargetInfo", targetId=target_id)["targetInfo"].get("browserContextId")
 
 
-def _observepoint_tab():
-    """A tab in the observepoint Chrome profile, to compare a new window's profile against."""
-    tabs = list_tabs(include_chrome=False)
-    for marks in (("localhost.observepointstaging.com", "localhost:9004"), ("observepointstaging.com", "observepoint.com")):
-        for t in tabs:
-            if any(m in t["url"] for m in marks):
-                return t
-    return None
-
-
 def claim_tab(url=None):
     """Attach to this session's own window. Call it first in every browser-harness call.
 
-    Each agent session gets its own Chrome window in the observepoint profile. The window opens
-    behind the user's windows and never takes focus. Its tab title starts with a label such as
+    Each agent session gets its own window in the agent Chrome (a separate Chrome with its own
+    profile, ~/.chrome-agents, which run.py starts). The window opens behind the user's windows
+    and never takes focus. Its tab title starts with a label such as
     "\U0001F916 wt1 4f2a \u00B7 ", so the user can find it in the Window menu and watch.
     url: the first page (default: this checkout's dev server, APP_URL).
     Returns {"targetId", "owned": True}. Call release_tab() at the end to close the window.
@@ -186,14 +177,8 @@ def claim_tab(url=None):
         _prepare()
         return {"targetId": state["targetId"], "owned": True}
 
-    ref = _observepoint_tab()
-    if ref is None:
-        raise RuntimeError("claim_tab: no observepoint tab is open to check the Chrome profile against. Ask the user to open one.")
+    # The agent Chrome (run.py) has one profile, so the window always opens in it.
     tid = cdp("Target.createTarget", url="about:blank", newWindow=True, background=True)["targetId"]
-    if _context(tid) != _context(ref["targetId"]):
-        # Chrome opens new windows in the profile used last, and CDP cannot choose one.
-        cdp("Target.closeTarget", targetId=tid)
-        raise RuntimeError("claim_tab: the new window opened in another Chrome profile. Ask the user to click into an observepoint window, then retry.")
     _take_lock(tid, owned=True)
     state = {"targetId": tid, "owned": True}
     _STATE.write_text(json.dumps(state))
