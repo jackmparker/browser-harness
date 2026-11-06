@@ -149,6 +149,11 @@ def _prepare():
         cdp("Page.addScriptToEvaluateOnNewDocument", source=script)
         if state:
             _STATE.write_text(json.dumps({**state, "prepared": sid}))
+    # A click on a file input opens the macOS file picker, which brings the agent Chrome to the
+    # front (seen on 2026-11-06). Stop the picker; upload_file() sets the files directly instead.
+    # Called every time (not only once per session), so windows prepared before this also get it.
+    try: cdp("Page.setInterceptFileChooserDialog", enabled=True)
+    except RuntimeError: pass
     try: cdp("Runtime.evaluate", expression=script)  # the page already open; a no-op when labelled
     except RuntimeError: pass
 

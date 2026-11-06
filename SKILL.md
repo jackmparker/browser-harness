@@ -19,7 +19,7 @@ print(page_info())
 ```
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
-- On this machine, start every call with claim_tab() and call release_tab() when done. Never switch_tab() or new_tab(): both bring a tab to the front and steal focus. Follow "Browser testing" in ~/.claude/CLAUDE.md.
+- On this machine, start every call with claim_tab() and call release_tab() when done. Never switch_tab() or new_tab(): both bring a tab to the front and steal focus. For a file input, call upload_file(selector, path). Clicking the input opens no file picker in the agent Chrome. Follow "Browser testing" in ~/.claude/CLAUDE.md.
 
 Available interaction skills:
 - interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix
