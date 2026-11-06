@@ -48,6 +48,14 @@ def _agent_chrome():
 
     if up():
         return
+    # Chrome empties chrome_debug.log when it starts. Keep the log of the run before (it holds
+    # the cause when the agent Chrome crashed), as chrome_debug-<time>.log, and keep the last 5.
+    import glob, shutil
+    debug_log = os.path.join(AGENT_CHROME_PROFILE, "chrome_debug.log")
+    if os.path.exists(debug_log) and os.path.getsize(debug_log) > 0:
+        shutil.move(debug_log, os.path.join(AGENT_CHROME_PROFILE, time.strftime("chrome_debug-%Y%m%d-%H%M%S.log")))
+    for old_log in sorted(glob.glob(os.path.join(AGENT_CHROME_PROFILE, "chrome_debug-*.log")))[:-5]:
+        os.remove(old_log)
     # -g: do not bring it to the front. -n: a second Chrome, separate from the user's.
     subprocess.run(["open", "-gna", "Google Chrome", "--args",
                     f"--user-data-dir={AGENT_CHROME_PROFILE}", f"--remote-debugging-port={AGENT_CHROME_PORT}",

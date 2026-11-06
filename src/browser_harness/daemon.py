@@ -97,7 +97,7 @@ API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    open(LOG, "a").write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
 
 
 async def _silent(coro):
@@ -373,7 +373,11 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
+    # Keep the log of earlier daemons: after an agent Chrome crash it shows the last calls.
+    # Start a new file only when it grows past 5 MB (the old one is kept as <log>.1).
+    if os.path.exists(LOG) and os.path.getsize(LOG) > 5_000_000:
+        os.replace(LOG, LOG + ".1")
+    log(f"daemon start pid={os.getpid()}")
     open(PID, "w").write(str(os.getpid()))
     try:
         asyncio.run(main())
