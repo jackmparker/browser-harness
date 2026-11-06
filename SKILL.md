@@ -1,6 +1,6 @@
 ---
 name: browser
-description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chrome.
+description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. On this machine it drives the agent Chrome, a separate headless Chrome that browser-harness starts, never the user's own Chrome.
 ---
 
 # browser-harness
@@ -19,7 +19,7 @@ print(page_info())
 ```
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
-- On this machine, start every call with claim_tab() and call release_tab() when done. Never switch_tab() or new_tab(): both bring a tab to the front and steal focus. For a file input, call upload_file(selector, path). Clicking the input opens no file picker in the agent Chrome. The agent Chrome runs headless by default (`browser-harness --agent-chrome status` shows the mode). Only the user switches it with `--agent-chrome headed` or `headless`. Follow "Browser testing" in ~/.claude/CLAUDE.md.
+- On this machine, start every call with claim_tab() and call release_tab() when done. Never switch_tab() or new_tab(): both bring a tab to the front and steal focus. For a file input, call upload_file(selector, path). Clicking the input opens no file picker in the agent Chrome. The agent Chrome runs headless by default (`browser-harness --agent-chrome status` shows the mode). Only the user switches it with `--agent-chrome headed` or `headless`. Use Cmd+click and middle-click only when the test is about those clicks, and close the tabs they open at once. Follow "Browser testing" in ~/.claude/CLAUDE.md.
 
 Available interaction skills:
 - interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix

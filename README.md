@@ -2,6 +2,23 @@
 
 # Browser Harness ♞
 
+> **This fork** (`jackmparker/browser-harness`, branch `jack/parallel-agents`) lets several agents
+> share one browser at the same time without taking focus. Setup and the full picture:
+> [agent-dev-setup](https://github.com/jackmparker/agent-dev-setup). What it changes:
+>
+> - Agents drive a separate **agent Chrome** (profile `~/.chrome-agents`, port 9333), never yours.
+>   `run.py` starts it when needed, **headless by default**.
+>   `browser-harness --agent-chrome headed|headless|status` switches; `headed` opens the staging
+>   sign-in page.
+> - One shared daemon (`BU_NAME=agents`) keeps a current tab per agent session (`BU_CLIENT`, set
+>   from the Claude Code session id).
+> - `claim_tab()` / `release_tab()` (in `agent-workspace/agent_helpers.py`) give each session its
+>   own labelled window ("🤖 wt1 4f2a ·"), with focus emulation, and block the macOS file picker
+>   (use `upload_file()`).
+> - Chrome runs with renderer accessibility off, keeps its last 5 logs
+>   (`~/.chrome-agents/chrome_debug-*.log`), and the daemon log (`/tmp/bu-agents.log`) appends
+>   with times.
+
 Connect an LLM directly to your real browser with a thin, editable CDP harness. For browser tasks where you need **complete freedom**.
 
 One websocket to Chrome, nothing between. The agent writes what's missing during execution. The harness improves itself every run.
