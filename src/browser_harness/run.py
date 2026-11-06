@@ -56,7 +56,10 @@ def _agent_chrome():
                     # Agent windows sit behind the user's windows, and a locked screen covers every window.
                     # Chrome then treats a page as hidden and slows its timers and drawing; tests stall.
                     "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
-                    "--disable-background-timer-throttling"], check=True)
+                    "--disable-background-timer-throttling",
+                    # Chrome's own log, in ~/.chrome-agents/chrome_debug.log: names the failed check
+                    # when the agent Chrome crashes (seen on 2026-11-05, cause not yet known).
+                    "--enable-logging", "--v=0"], check=True)
     for _ in range(100):
         if up():
             return
