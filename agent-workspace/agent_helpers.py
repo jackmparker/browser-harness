@@ -154,6 +154,10 @@ def _prepare():
     # Called every time (not only once per session), so windows prepared before this also get it.
     try: cdp("Page.setInterceptFileChooserDialog", enabled=True)
     except RuntimeError: pass
+    # Request interception left on by an earlier call pauses the page's requests for good (see
+    # run.py). Each call starts with it off; a script that needs it enables it after claim_tab().
+    try: cdp("Fetch.disable")
+    except RuntimeError: pass
     try: cdp("Runtime.evaluate", expression=script)  # the page already open; a no-op when labelled
     except RuntimeError: pass
 

@@ -157,8 +157,9 @@ Commands:
   browser-harness --setup          interactively attach to your running browser
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
-  browser-harness --agent-chrome [headless|headed|status]
-                                   run the agent Chrome without windows (default) or with windows
+  browser-harness --agent-chrome [headless|headed|status|restart]
+                                   run the agent Chrome without windows (default) or with windows;
+                                   restart stops a hung agent Chrome and starts it again
 """
 
 
@@ -167,15 +168,38 @@ def agent_chrome_command(want):
     and sign in again when the staging login expires).
     headed: restarts at once, even when agents use it (a person needs the window, for example to
     sign in), and opens a window at the staging sign-in page.
-    headless: restarts only when no agent uses it; otherwise at its next start."""
+    headless: restarts only when no agent uses it; otherwise at its next start.
+    restart: stops the agent Chrome at once (force-stops it when it hangs) and starts it again in
+    its mode. Agents that used it get a new window on their next call."""
     import glob, json, time
     pids = _agent_chrome_pids()
     running = "not running" if not pids else ("headless" if any("--headless" in a for a in pids.values()) else "headed")
     if want == "status":
         print(f"agent Chrome: set to {_agent_chrome_mode()}, now {running}")
         return 0
+    def stop(pids):
+        # A hung Chrome ignores SIGTERM (seen on 2026-11-06), so force-stop it after 10 seconds.
+        for pid in pids:
+            os.kill(pid, 15)
+        for _ in range(50):
+            if not _agent_chrome_pids():
+                return
+            time.sleep(0.2)
+        for pid in _agent_chrome_pids():
+            os.kill(pid, 9)
+        for _ in range(25):
+            if not _agent_chrome_pids():
+                return
+            time.sleep(0.2)
+    if want == "restart":
+        if pids:
+            stop(pids)
+        restart_daemon()
+        _agent_chrome()
+        print(f"agent Chrome: restarted, {_agent_chrome_mode()}. Agents that used it get a new window on their next call.")
+        return 0
     if want not in ("headless", "headed"):
-        print("usage: browser-harness --agent-chrome [headless|headed|status]")
+        print("usage: browser-harness --agent-chrome [headless|headed|status|restart]")
         return 2
     open(AGENT_CHROME_MODE_FILE, "w").write(want + "\n")
     if not pids or running == want:
@@ -199,12 +223,7 @@ def agent_chrome_command(want):
         print(f"agent Chrome: set to {want}. It restarts that way when it next starts. "
               f"Not restarted now, because these agents use it: {', '.join(busy)}")
         return 0
-    for pid in pids:
-        os.kill(pid, 15)
-    for _ in range(50):
-        if not _agent_chrome_pids():
-            break
-        time.sleep(0.2)
+    stop(pids)
     restart_daemon()
     if want == "headed":
         _agent_chrome()
@@ -248,7 +267,17 @@ def main():
         sys.exit("Usage: browser-harness -c \"print(page_info())\"")
     print_update_banner()
     ensure_daemon()
-    exec(args[1], globals())
+    try:
+        exec(args[1], globals())
+    finally:
+        # Request interception (CDP Fetch) that outlives the script pauses every matching request
+        # in the page for good. On 2026-11-06 a QA script that faked 5xx errors ended without
+        # Fetch.disable; the app kept retrying, and the agent Chrome grew to 12 GB and hung.
+        if "Fetch.enable" in args[1]:
+            try:
+                cdp("Fetch.disable")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
