@@ -183,12 +183,21 @@ def agent_chrome_command(want):
             os.kill(pid, 15)
         for _ in range(50):
             if not _agent_chrome_pids():
-                return
+                break
             time.sleep(0.2)
         for pid in _agent_chrome_pids():
             os.kill(pid, 9)
         for _ in range(25):
             if not _agent_chrome_pids():
+                break
+            time.sleep(0.2)
+        # The port can stay open for a moment after the process ends; _agent_chrome() would then
+        # think Chrome still runs and not start it (seen on 2026-11-06).
+        import socket
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", AGENT_CHROME_PORT), timeout=0.5).close()
+            except OSError:
                 return
             time.sleep(0.2)
     if want == "restart":

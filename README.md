@@ -9,12 +9,14 @@
 > - Agents drive a separate **agent Chrome** (profile `~/.chrome-agents`, port 9333), never yours.
 >   `run.py` starts it when needed, **headless by default**.
 >   `browser-harness --agent-chrome headed|headless|status` switches; `headed` opens the staging
->   sign-in page.
+>   sign-in page. `browser-harness --agent-chrome restart` stops a hung agent Chrome (force-stop
+>   after 10 s) and starts it again.
 > - One shared daemon (`BU_NAME=agents`) keeps a current tab per agent session (`BU_CLIENT`, set
 >   from the Claude Code session id).
 > - `claim_tab()` / `release_tab()` (in `agent-workspace/agent_helpers.py`) give each session its
 >   own labelled window ("🤖 wt1 4f2a ·"), with focus emulation, and block the macOS file picker
->   (use `upload_file()`).
+>   (use `upload_file()`). Each call starts and ends with request interception (CDP `Fetch`) off,
+>   because interception left on pauses the page's requests for good.
 > - Chrome runs with renderer accessibility off, keeps its last 5 logs
 >   (`~/.chrome-agents/chrome_debug-*.log`), and the daemon log (`/tmp/bu-agents.log`) appends
 >   with times.
