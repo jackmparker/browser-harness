@@ -59,16 +59,21 @@ def connect(name, timeout=1.0):
     s.settimeout(timeout); return s
 
 
+# One request is one line. asyncio's default line limit (64 KB) breaks a large script, such as
+# axe-core (550 KB) that ticket-verify injects for its accessibility scan.
+LINE_LIMIT = 16 * 1024 * 1024
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     if not IS_WINDOWS:
         path = str(_sock_path(name))
         if os.path.exists(path): os.unlink(path)
-        server = await asyncio.start_unix_server(handler, path=path)
+        server = await asyncio.start_unix_server(handler, path=path, limit=LINE_LIMIT)
         os.chmod(path, 0o600)
         async with server: await asyncio.Event().wait()
         return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=LINE_LIMIT)
     pf = port_path(name)
     pf.write_text(str(server.sockets[0].getsockname()[1]))  # so clients can find us
     try:
