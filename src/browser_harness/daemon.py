@@ -228,6 +228,7 @@ class Daemon:
         self.target_id = None
         self.events = deque(maxlen=BUF)
         self.kept_events = []  # KEEP_EVENTS, never dropped
+        self.paused = {}  # session id -> request ids paused by Fetch and not yet answered
         self.stop = None  # asyncio.Event, set inside start()
         self.clients = {}  # client -> {session, target_id}: each agent keeps its own tab on one connection
         self.dialogs = {}  # session_id -> open JS dialog
@@ -284,6 +285,8 @@ class Daemon:
         async def tap(method, params, session_id=None):
             (self.kept_events if method in KEEP_EVENTS else self.events).append({"method": method, "params": params, "session_id": session_id})
             count_event(method, session_id)
+            if method == "Fetch.requestPaused":
+                self.paused.setdefault(session_id, set()).add(params.get("requestId"))
             if method == "Page.javascriptDialogOpening":
                 self.dialogs[session_id] = params
             elif method == "Page.javascriptDialogClosed":
@@ -351,6 +354,18 @@ class Daemon:
         current = get("session")
         sid = None if method.startswith("Target.") else (req.get("session_id") or current)
         trace(f"CMD {req.get('client') or '-'} {method} s={(sid or 'browser')[:6]} {len(json.dumps(params))}B")
+        if method in ("Fetch.continueRequest", "Fetch.fulfillRequest", "Fetch.failRequest", "Fetch.continueWithAuth"):
+            self.paused.get(sid, set()).discard(params.get("requestId"))
+        elif method == "Fetch.disable":
+            # Fetch.disable sends every still-paused request to the server for real. On 2026-11-07 a
+            # QA script held requests in its own list, then disabled Fetch: real staging items were
+            # paused twice. So fail every request this session has not answered first.
+            for rid in list(self.paused.pop(sid, set())):
+                try:
+                    await self.cdp.send_raw("Fetch.failRequest", {"requestId": rid, "errorReason": "Aborted"}, session_id=sid)
+                    trace(f"FAILED held request {rid} before Fetch.disable")
+                except Exception:
+                    pass
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
