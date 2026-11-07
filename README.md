@@ -15,8 +15,10 @@
 >   from the Claude Code session id).
 > - `claim_tab()` / `release_tab()` (in `agent-workspace/agent_helpers.py`) give each session its
 >   own labelled window ("🤖 wt1 4f2a ·"), with focus emulation, and block the macOS file picker
->   (use `upload_file()`). Each call starts and ends with request interception (CDP `Fetch`) off,
->   because interception left on pauses the page's requests for good. Never call
+>   (use `upload_file()`). A call that turned request interception (CDP `Fetch`) on ends by
+>   failing every paused request and moving the page to `about:blank`, then turns interception
+>   off: on a live page, turning it off sends the paused and later requests to the server for
+>   real. Paused-request events are never dropped from the event buffer (5,000 events). Never call
 >   `DOM.getDocument` with `depth=-1` on a page that keeps changing: it hangs the agent Chrome
 >   (it grows about 30 MB per second until it dies). `upload_file()` uses `depth=1`.
 > - Chrome runs with renderer accessibility off, keeps its last 5 logs

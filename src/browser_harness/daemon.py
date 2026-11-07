@@ -32,7 +32,11 @@ NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
-BUF = 500
+BUF = 5000
+# Events that must never be dropped from the buffer: a paused request that nobody sees stays
+# paused, and Fetch.disable then sends it to the server for real (2026-11-07: a QA script lost
+# Fetch.requestPaused events in a full buffer, and 26 real staging items were paused).
+KEEP_EVENTS = ("Fetch.requestPaused", "Fetch.authRequired", "Page.javascriptDialogOpening")
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Comet",
@@ -223,6 +227,7 @@ class Daemon:
         self.session = None
         self.target_id = None
         self.events = deque(maxlen=BUF)
+        self.kept_events = []  # KEEP_EVENTS, never dropped
         self.stop = None  # asyncio.Event, set inside start()
         self.clients = {}  # client -> {session, target_id}: each agent keeps its own tab on one connection
         self.dialogs = {}  # session_id -> open JS dialog
@@ -277,7 +282,7 @@ class Daemon:
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
-            self.events.append({"method": method, "params": params, "session_id": session_id})
+            (self.kept_events if method in KEEP_EVENTS else self.events).append({"method": method, "params": params, "session_id": session_id})
             count_event(method, session_id)
             if method == "Page.javascriptDialogOpening":
                 self.dialogs[session_id] = params
@@ -304,8 +309,11 @@ class Daemon:
 
         meta = req.get("meta")
         if meta == "drain_events":
+            mine_kept = [e for e in self.kept_events if e["session_id"] in (get("session"), None)]
+            self.kept_events = [e for e in self.kept_events if e not in mine_kept]
             mine = [e for e in self.events if e["session_id"] in (get("session"), None)]
             for e in mine: self.events.remove(e)
+            mine = mine_kept + mine
             return {"events": mine}
         if meta == "session":     return {"session_id": get("session")}
         if meta == "connection_status":

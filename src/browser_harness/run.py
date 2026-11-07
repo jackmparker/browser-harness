@@ -283,6 +283,26 @@ def main():
         # in the page for good. On 2026-11-06 a QA script that faked 5xx errors ended without
         # Fetch.disable; the app kept retrying, and the agent Chrome grew to 12 GB and hung.
         if "Fetch.enable" in args[1]:
+            # Turning interception off while the page still runs sends its paused and later
+            # requests to the server for real (2026-11-07: 26 real staging items were paused that
+            # way). So first leave the page (about:blank stops its scripts), failing every request
+            # that is still paused, and only then turn interception off. The page is lost: a test
+            # that intercepts requests must finish its checks in the same call.
+            def fail_paused():
+                for e in drain_events():
+                    if e.get("method") == "Fetch.requestPaused":
+                        try:
+                            cdp("Fetch.failRequest", requestId=e["params"]["requestId"], errorReason="Aborted")
+                        except Exception:
+                            pass
+            try:
+                fail_paused()
+                cdp("Page.navigate", url="about:blank")
+                import time as _time
+                _time.sleep(0.5)
+                fail_paused()
+            except Exception:
+                pass
             try:
                 cdp("Fetch.disable")
             except Exception:
