@@ -100,6 +100,35 @@ def log(msg):
     open(LOG, "a").write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
 
 
+# One line per CDP command and a count of events every 30 seconds, to find what comes right before
+# an agent Chrome hang. Set BU_CDP_TRACE= (empty) to turn it off.
+CDP_TRACE = os.environ.get("BU_CDP_TRACE", "/tmp/bu-agents-cdp.log")
+_event_counts = {}
+_event_counts_since = time.time()
+
+
+def trace(msg):
+    if not CDP_TRACE:
+        return
+    try:
+        if os.path.exists(CDP_TRACE) and os.path.getsize(CDP_TRACE) > 20_000_000:
+            os.replace(CDP_TRACE, CDP_TRACE + ".1")
+        open(CDP_TRACE, "a").write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
+def count_event(method, session_id):
+    global _event_counts_since
+    key = f"{method}@{(session_id or 'browser')[:6]}"
+    _event_counts[key] = _event_counts.get(key, 0) + 1
+    if time.time() - _event_counts_since >= 30:
+        top = sorted(_event_counts.items(), key=lambda kv: -kv[1])[:8]
+        trace("EVENTS " + " ".join(f"{k}={v}" for k, v in top))
+        _event_counts.clear()
+        _event_counts_since = time.time()
+
+
 async def _silent(coro):
     try:
         await coro
@@ -249,6 +278,7 @@ class Daemon:
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
+            count_event(method, session_id)
             if method == "Page.javascriptDialogOpening":
                 self.dialogs[session_id] = params
             elif method == "Page.javascriptDialogClosed":
@@ -312,6 +342,7 @@ class Daemon:
         # For everything else, explicit session in req wins; else this client's tab.
         current = get("session")
         sid = None if method.startswith("Target.") else (req.get("session_id") or current)
+        trace(f"CMD {req.get('client') or '-'} {method} s={(sid or 'browser')[:6]} {len(json.dumps(params))}B")
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:

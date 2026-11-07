@@ -350,7 +350,8 @@ def dispatch_key(selector, key="Enter", event="keypress"):
 
 def upload_file(selector, path):
     """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
-    doc = cdp("DOM.getDocument", depth=-1)
+    # depth=1, not -1: tracking every element hangs the agent Chrome on a page that keeps changing.
+    doc = cdp("DOM.getDocument", depth=1)
     nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
