@@ -7,6 +7,11 @@
 > [agent-dev-setup](https://github.com/jackmparker/agent-dev-setup). What it changes:
 >
 > - Agents drive a separate **agent Chrome** (profile `~/.chrome-agents`, port 9333), never yours.
+>   A call made inside an agent worktree (`.aikit/worktrees/<name>` or `.claude/worktrees/<name>`)
+>   gets that worktree's own agent Chrome instead (profile `~/.chrome-agents-checkouts/<name>`,
+>   its own port and daemon), started with the staging sign-in copied from the main one. A page
+>   that hangs or crashes Chrome then stops only that worktree's agents.
+>   `BU_AGENT_CHROME_SHARED=1` forces the main one.
 >   `run.py` starts it when needed, **headless by default**.
 >   `browser-harness --agent-chrome headed|headless|status` switches; `headed` opens the staging
 >   sign-in page. `browser-harness --agent-chrome restart` stops a hung agent Chrome (force-stop

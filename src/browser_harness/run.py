@@ -25,11 +25,45 @@ _session_client()
 
 # Agents drive their own Chrome, not the user's: started with remote debugging on, so Chrome never
 # asks "Allow remote debugging?", and with one profile, so new windows never land in the wrong one.
+MAIN_AGENT_CHROME_PROFILE = os.path.expanduser("~/.chrome-agents")
+CHECKOUT_CHROME_DIR = os.path.expanduser("~/.chrome-agents-checkouts")
+
+
+def _checkout_label():
+    """The worktree folder name when the call runs inside an agent worktree (.aikit/worktrees/<name>
+    or .claude/worktrees/<name>), else None."""
+    import subprocess
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                             timeout=3).stdout.strip()
+    except Exception:
+        return None
+    parent = os.path.basename(os.path.dirname(top))
+    grand = os.path.basename(os.path.dirname(os.path.dirname(top)))
+    if parent == "worktrees" and grand in (".aikit", ".claude"):
+        os.environ["BU_AGENT_CHECKOUT"] = top
+        return os.path.basename(top)
+    return None
+
+
+# Each agent worktree gets its own agent Chrome (own port, profile and daemon), so a page that hangs
+# or crashes Chrome stops only that worktree's agents, and shows which ticket caused it (on
+# 2026-11-07 one shared Chrome hung and crashed many times and stopped every agent). Calls outside a
+# worktree use the main agent Chrome. BU_AGENT_CHROME_SHARED=1 forces the main one.
+_LABEL = None if (os.environ.get("BU_AGENT_CHROME_PORT") or os.environ.get("BU_AGENT_CHROME_PROFILE")
+                  or os.environ.get("BU_AGENT_CHROME_SHARED")) else _checkout_label()
+if _LABEL:
+    import zlib
+    os.environ["BU_AGENT_CHROME_PORT"] = str(9400 + zlib.crc32(_LABEL.encode()) % 500)
+    os.environ["BU_AGENT_CHROME_PROFILE"] = os.path.join(CHECKOUT_CHROME_DIR, _LABEL)
+    os.environ.setdefault("BU_NAME", "agents-" + _LABEL)
+
 AGENT_CHROME_PORT = int(os.environ.get("BU_AGENT_CHROME_PORT", "9333"))
 AGENT_CHROME_PROFILE = os.path.expanduser(os.environ.get("BU_AGENT_CHROME_PROFILE", "~/.chrome-agents"))
 # The agent Chrome runs headless (no windows) unless this file says "headed". Headless never takes
 # focus and other apps cannot read its pages. `browser-harness --agent-chrome headed` switches.
-AGENT_CHROME_MODE_FILE = AGENT_CHROME_PROFILE + "-mode"
+# One mode for all agent Chromes: the main profile's.
+AGENT_CHROME_MODE_FILE = (MAIN_AGENT_CHROME_PROFILE if _LABEL else AGENT_CHROME_PROFILE) + "-mode"
 CHROME_APP = "/Applications/Google Chrome.app"
 SIGN_IN_URL = "https://master.observepointstaging.com/login"
 CHROME_BIN = CHROME_APP + "/Contents/MacOS/Google Chrome"
@@ -46,7 +80,7 @@ def _agent_chrome_pids():
     """Main process ids of the agent Chrome (the one that runs with its profile), with their args."""
     import subprocess
     out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
-    flag = f"--user-data-dir={AGENT_CHROME_PROFILE}"
+    flag = f"--user-data-dir={AGENT_CHROME_PROFILE} "  # the space: ~/.chrome-agents is a prefix of the worktree profiles
     return {int(l.split(None, 1)[0]): l.split(None, 1)[1] for l in out.splitlines()
             if flag in l and "--type=" not in l and l.split(None, 1)[1].startswith(CHROME_BIN)}
 
@@ -62,6 +96,26 @@ def _agent_env():
     return True
 
 
+def _copy_sign_in():
+    """A worktree's agent Chrome starts with the staging sign-in of the main agent Chrome: its
+    cookies and local storage, copied at each start (Chrome is not running then)."""
+    import shutil
+    src = os.path.join(MAIN_AGENT_CHROME_PROFILE, "Default")
+    dst = os.path.join(AGENT_CHROME_PROFILE, "Default")
+    os.makedirs(dst, exist_ok=True)
+    for name in ("Cookies", "Cookies-journal"):
+        if os.path.exists(os.path.join(src, name)):
+            shutil.copy2(os.path.join(src, name), os.path.join(dst, name))
+    if os.path.isdir(os.path.join(src, "Local Storage")):
+        shutil.rmtree(os.path.join(dst, "Local Storage"), ignore_errors=True)
+        shutil.copytree(os.path.join(src, "Local Storage"), os.path.join(dst, "Local Storage"))
+    # The watchdog stops this Chrome and deletes its profile once the worktree is gone.
+    open(os.path.join(AGENT_CHROME_PROFILE, "checkout.txt"), "w").write(os.environ.get("BU_AGENT_CHECKOUT", "") + "\n")
+    if os.path.exists(os.path.join(MAIN_AGENT_CHROME_PROFILE, "Local State")):
+        shutil.copy2(os.path.join(MAIN_AGENT_CHROME_PROFILE, "Local State"),
+                     os.path.join(AGENT_CHROME_PROFILE, "Local State"))
+
+
 def _agent_chrome():
     """Starts the agent Chrome, in the background, when it does not run."""
     import socket, subprocess, time
@@ -75,6 +129,8 @@ def _agent_chrome():
 
     if up():
         return
+    if AGENT_CHROME_PROFILE.startswith(CHECKOUT_CHROME_DIR + os.sep):
+        _copy_sign_in()
     # Chrome empties chrome_debug.log when it starts. Keep the log of the run before (it holds
     # the cause when the agent Chrome crashed), as chrome_debug-<time>.log, and keep the last 5.
     import glob, shutil
