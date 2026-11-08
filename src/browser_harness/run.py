@@ -202,6 +202,10 @@ def _agent_chrome():
     flags = [f"--user-data-dir={AGENT_CHROME_PROFILE}", f"--remote-debugging-port={AGENT_CHROME_PORT}",
                     "--no-first-run", "--no-default-browser-check",
                     "--use-mock-keychain",  # see AGENT_CHROME_APP: no keychain prompt, own sign-in
+                    # Google binds its sign-in to a device key that Chrome keeps in the keychain. The
+                    # renamed copy with a mock keychain cannot keep that key, and Google ended the agent
+                    # Chrome's sign-in within 2 hours, twice on 2026-11-07. Turn the binding off.
+                    "--disable-features=EnableBoundSessionCredentials,DeviceBoundSessionCredentials",
                     "--no-startup-window",  # no unused "New Tab" window; claim_tab() opens them
                     # Agent windows sit behind the user's windows, and a locked screen covers every window.
                     # Chrome then treats a page as hidden and slows its timers and drawing; tests stall.
