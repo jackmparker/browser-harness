@@ -52,7 +52,9 @@ def _checkout_label():
                 open(record, "w").write(top + "\n")
             except OSError:
                 pass
-    elif record and os.path.exists(record):
+    elif record and os.path.exists(record) and sys.argv[1:2] != ["--agent-chrome"]:
+        # Admin commands (--agent-chrome restart, headed, headless) act on the Chrome of the folder they
+        # run in, never on a remembered one.
         try:
             top = open(record).read().strip()
         except OSError:
