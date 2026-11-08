@@ -7,6 +7,7 @@
 > [agent-dev-setup](https://github.com/jackmparker/agent-dev-setup). What it changes:
 >
 > - Agents drive a separate **agent Chrome** (profile `~/.chrome-agents`, port 9333), never yours.
+>   It runs from a renamed copy of Chrome (`~/Applications/Agent Chrome.app`), so macOS never mixes it up with yours.
 >   A call made inside an agent worktree (`.aikit/worktrees/<name>` or `.claude/worktrees/<name>`)
 >   gets that worktree's own agent Chrome instead (profile `~/.chrome-agents-checkouts/<name>`,
 >   its own port and daemon), started with the staging sign-in copied from the main one. A page

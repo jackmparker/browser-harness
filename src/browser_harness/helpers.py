@@ -40,9 +40,59 @@ CLIENT = os.environ.get("BU_CLIENT", "")  # set by run.py: one tab per agent ses
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
-def _send(req):
+class TabFrozenError(RuntimeError):
+    """The page stopped answering, but the browser still answers. The tab is closed."""
+
+
+class BrowserNotAnsweringError(TimeoutError):
+    """The whole agent Chrome stopped answering. The watchdog restarts it."""
+
+
+def _send(req, timeout=5.0):
     if CLIENT: req = {**req, "client": CLIENT}
-    c = ipc.connect(NAME, timeout=5.0)
+    try:
+        return _send_once(req, timeout)
+    except TimeoutError:
+        if req.get("meta") or str(req.get("method", "")).startswith(("Target.", "Browser.")):
+            raise
+    _check_frozen_tab()
+    raise TimeoutError("The browser call took over 5 seconds, but the page still answers. "
+                       "Make the call smaller (less data, one action per call), then go on.")
+
+
+def _check_frozen_tab():
+    """A page call timed out. Tell apart a slow call, a frozen tab and a frozen browser.
+    On 2026-11-07 a QA agent waited 12 minutes for a watchdog restart that never came:
+    only one tab was frozen, and the browser still answered."""
+    try:
+        _send_once({"method": "Browser.getVersion", "params": {}, **({"client": CLIENT} if CLIENT else {})}, 10.0)
+    except TimeoutError:
+        raise BrowserNotAnsweringError(
+            "The agent Chrome does not answer. Do not restart it. The watchdog restarts it within "
+            "about 4 minutes; then call claim_tab() again.") from None
+    try:
+        # The page's main thread is free between await steps, so a slow but healthy page answers this.
+        _send_once({"method": "Runtime.evaluate", "params": {"expression": "1", "returnByValue": True},
+                    **({"client": CLIENT} if CLIENT else {})}, 30.0)
+        return
+    except TimeoutError:
+        pass
+    tab = None
+    try:
+        tab = _send_once({"meta": "connection_status", **({"client": CLIENT} if CLIENT else {})}, 10.0).get("target_id")
+        if tab:
+            _send_once({"method": "Target.closeTarget", "params": {"targetId": tab},
+                        **({"client": CLIENT} if CLIENT else {})}, 10.0)
+    except Exception:
+        pass
+    raise TabFrozenError(
+        f"This tab stopped answering for over 30 seconds, but the browser is fine. The tab ({tab}) is closed. "
+        "Do not wait and do not open this page again. Record it as a finding (the URL and the last action), "
+        "then call claim_tab() for a new window and go on with the next case.")
+
+
+def _send_once(req, timeout):
+    c = ipc.connect(NAME, timeout=timeout)
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):

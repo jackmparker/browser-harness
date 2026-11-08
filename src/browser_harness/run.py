@@ -66,7 +66,45 @@ AGENT_CHROME_PROFILE = os.path.expanduser(os.environ.get("BU_AGENT_CHROME_PROFIL
 AGENT_CHROME_MODE_FILE = (MAIN_AGENT_CHROME_PROFILE if _LABEL else AGENT_CHROME_PROFILE) + "-mode"
 CHROME_APP = "/Applications/Google Chrome.app"
 SIGN_IN_URL = "https://master.observepointstaging.com/login"
-CHROME_BIN = CHROME_APP + "/Contents/MacOS/Google Chrome"
+# Agents run a renamed copy of Chrome ("Agent Chrome", its own bundle id). With the real app, macOS
+# treats the agent Chrome as the user's Chrome when theirs is closed: the Dock icon then opens the
+# agent Chrome. The copy cannot read the real Chrome's keychain key, so it uses --use-mock-keychain
+# and keeps its own staging sign-in. _agent_chrome_app() makes the copy again when Chrome updates.
+AGENT_CHROME_APP = os.path.expanduser("~/Applications/Agent Chrome.app")
+CHROME_BIN = AGENT_CHROME_APP + "/Contents/MacOS/Google Chrome"
+
+
+def _chrome_version(app):
+    import plistlib
+    try:
+        return plistlib.load(open(app + "/Contents/Info.plist", "rb"))["CFBundleShortVersionString"]
+    except (OSError, KeyError):
+        return None
+
+
+def _agent_chrome_app():
+    """Makes ~/Applications/Agent Chrome.app from Chrome when it is missing or older than Chrome.
+    A copy on the same disk is a clone: fast, and it takes almost no space."""
+    import shutil, subprocess
+    if os.path.exists(CHROME_BIN) and _chrome_version(AGENT_CHROME_APP) == _chrome_version(CHROME_APP):
+        return
+    tmp = AGENT_CHROME_APP + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(os.path.dirname(AGENT_CHROME_APP), exist_ok=True)
+    subprocess.run(["cp", "-cR", CHROME_APP, tmp], check=True)
+    plist = tmp + "/Contents/Info.plist"
+    subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Set :CFBundleIdentifier com.jackparker.agent-chrome",
+                    "-c", "Set :CFBundleName Agent Chrome", "-c", "Set :CFBundleDisplayName Agent Chrome",
+                    plist], check=True, stdout=subprocess.DEVNULL)
+    # The new name breaks Google's signature, and macOS kills an app with a broken one. Sign the outer
+    # app again, without --deep: the framework inside keeps Google's signature.
+    subprocess.run(["xattr", "-cr", tmp], check=True)
+    subprocess.run(["codesign", "--force", "--sign", "-", tmp], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.rmtree(AGENT_CHROME_APP, ignore_errors=True)
+    os.rename(tmp, AGENT_CHROME_APP)
+    subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
+                    "/Support/lsregister", "-f", AGENT_CHROME_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _agent_chrome_mode():
@@ -82,7 +120,7 @@ def _agent_chrome_pids():
     out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
     flag = f"--user-data-dir={AGENT_CHROME_PROFILE} "  # the space: ~/.chrome-agents is a prefix of the worktree profiles
     return {int(l.split(None, 1)[0]): l.split(None, 1)[1] for l in out.splitlines()
-            if flag in l and "--type=" not in l and l.split(None, 1)[1].startswith(CHROME_BIN)}
+            if flag in l and "--type=" not in l and l.split(None, 1)[1].startswith((CHROME_BIN, CHROME_APP))}  # CHROME_APP: one started before the copy
 
 
 def _agent_env():
@@ -129,6 +167,7 @@ def _agent_chrome():
 
     if up():
         return
+    _agent_chrome_app()
     if AGENT_CHROME_PROFILE.startswith(CHECKOUT_CHROME_DIR + os.sep):
         _copy_sign_in()
     # Chrome empties chrome_debug.log when it starts. Keep the log of the run before (it holds
@@ -141,6 +180,7 @@ def _agent_chrome():
         os.remove(old_log)
     flags = [f"--user-data-dir={AGENT_CHROME_PROFILE}", f"--remote-debugging-port={AGENT_CHROME_PORT}",
                     "--no-first-run", "--no-default-browser-check",
+                    "--use-mock-keychain",  # see AGENT_CHROME_APP: no keychain prompt, own sign-in
                     "--no-startup-window",  # no unused "New Tab" window; claim_tab() opens them
                     # Agent windows sit behind the user's windows, and a locked screen covers every window.
                     # Chrome then treats a page as hidden and slows its timers and drawing; tests stall.
@@ -155,8 +195,7 @@ def _agent_chrome():
                     # CDP's Accessibility domain still works with this flag (tested).
                     "--disable-renderer-accessibility"]
     if _agent_chrome_mode() == "headless":
-        import plistlib
-        version = plistlib.load(open(CHROME_APP + "/Contents/Info.plist", "rb"))["CFBundleShortVersionString"]
+        version = _chrome_version(AGENT_CHROME_APP)
         flags += ["--headless=new",
                   # Gives a 1707 x 885 page, the size of a normal browser window on this Mac (headless starts at 800 x 600).
                   "--window-size=1707,972",
@@ -168,7 +207,7 @@ def _agent_chrome():
                          stderr=subprocess.DEVNULL, start_new_session=True)
     else:
         # -g: do not bring it to the front. -n: a second Chrome, separate from the user's.
-        subprocess.run(["open", "-gna", "Google Chrome", "--args"] + flags, check=True)
+        subprocess.run(["open", "-gna", AGENT_CHROME_APP, "--args"] + flags, check=True)
     for _ in range(100):
         if up():
             return
