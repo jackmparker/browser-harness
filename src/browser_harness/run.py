@@ -40,10 +40,29 @@ def _checkout_label():
         return None
     parent = os.path.basename(os.path.dirname(top))
     grand = os.path.basename(os.path.dirname(os.path.dirname(top)))
+    # An agent's calls must reach one Chrome from any folder. On 2026-11-07 a QA agent ran some calls
+    # from its scratchpad and some from its worktree, reached two Chromes and lost its tab. So a call
+    # inside a worktree records the worktree for this client, and a call outside uses that record.
+    client = os.environ.get("BU_CLIENT", "")
+    record = os.path.join(CHECKOUT_CHROME_DIR, "clients", client) if client else None
     if parent == "worktrees" and grand in (".aikit", ".claude"):
-        os.environ["BU_AGENT_CHECKOUT"] = top
-        return os.path.basename(top)
-    return None
+        if record:
+            try:
+                os.makedirs(os.path.dirname(record), exist_ok=True)
+                open(record, "w").write(top + "\n")
+            except OSError:
+                pass
+    elif record and os.path.exists(record):
+        try:
+            top = open(record).read().strip()
+        except OSError:
+            return None
+        if not os.path.isdir(top):
+            return None
+    else:
+        return None
+    os.environ["BU_AGENT_CHECKOUT"] = top
+    return os.path.basename(top)
 
 
 # Each agent worktree gets its own agent Chrome (own port, profile and daemon), so a page that hangs
