@@ -45,7 +45,10 @@ def _app_url():
 APP_URL = _app_url()
 _APP_HOST = APP_URL.split("//", 1)[1].split("/", 1)[0]  # e.g. wt1.localhost.observepointstaging.com:9004
 LOCAL_PREFIXES = (f"http://{_APP_HOST}", f"http://{_APP_HOST.replace('.observepointstaging.com', '')}")
-LOCK_DIR = Path("/tmp/bu-tab-locks")
+# One lock folder per agent Chrome. Locks name tab ids of one Chrome, and _locks() deletes every lock
+# whose tab its Chrome does not have: with one shared folder, an agent on one Chrome deleted the
+# locks of agents on the other Chromes (2026-11-07, two runs at once).
+LOCK_DIR = Path("/tmp/bu-tab-locks") / os.environ.get("BU_NAME", "default")
 ME = CLIENT or "default"
 OWNER_PID = os.environ.get("CLAUDE_PID")  # the agent process; the shell of each call dies at once
 STALE_AFTER = 3600
@@ -75,7 +78,7 @@ def _page_ids():
 
 def _locks(page_ids):
     """Live locks by targetId. Deletes locks whose tab or owner is gone."""
-    LOCK_DIR.mkdir(exist_ok=True)
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
     out = {}
     for f in LOCK_DIR.glob("*.json"):
         lock = _read(f)
