@@ -160,9 +160,18 @@ def _copy_sign_in():
     src = os.path.join(MAIN_AGENT_CHROME_PROFILE, "Default")
     dst = os.path.join(AGENT_CHROME_PROFILE, "Default")
     os.makedirs(dst, exist_ok=True)
-    for name in ("Cookies", "Cookies-journal"):
-        if os.path.exists(os.path.join(src, name)):
-            shutil.copy2(os.path.join(src, name), os.path.join(dst, name))
+    # Copy only the staging cookies. Google binds its sign-in cookies to one browser and can end the
+    # whole Google session when the same cookies show up in a second browser. On 2026-11-07 the main
+    # agent Chrome lost its Google sign-in within hours, while every worktree Chrome had a copy.
+    import sqlite3
+    for name in ("Cookies-journal",):
+        try: os.remove(os.path.join(dst, name))
+        except OSError: pass
+    if os.path.exists(os.path.join(src, "Cookies")):
+        shutil.copy2(os.path.join(src, "Cookies"), os.path.join(dst, "Cookies"))
+        db = sqlite3.connect(os.path.join(dst, "Cookies"))
+        db.execute("DELETE FROM cookies WHERE host_key NOT LIKE '%observepointstaging.com'")
+        db.commit(); db.close()
     if os.path.isdir(os.path.join(src, "Local Storage")):
         shutil.rmtree(os.path.join(dst, "Local Storage"), ignore_errors=True)
         shutil.copytree(os.path.join(src, "Local Storage"), os.path.join(dst, "Local Storage"))
