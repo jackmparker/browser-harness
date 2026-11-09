@@ -162,9 +162,22 @@ def _copy_sign_in():
     src = os.path.join(MAIN_AGENT_CHROME_PROFILE, "Default")
     dst = os.path.join(AGENT_CHROME_PROFILE, "Default")
     os.makedirs(dst, exist_ok=True)
-    for name in ("Cookies", "Cookies-journal"):
-        if os.path.exists(os.path.join(src, name)):
-            shutil.copy2(os.path.join(src, name), os.path.join(dst, name))
+    # Copy only the staging cookies, never the Google sign-in. Google ends the whole Google session
+    # when its rotating sign-in cookies show up in more than one browser: on 2026-11-09 Jack signed in
+    # at 9:02 AM, three worktree Chromes got a copy at 9:04 to 9:06 AM, and at 9:09 AM Google was
+    # signed out in every Chrome. Turning off device-bound sign-in (see the flags below) did not stop
+    # it. Worktree Chromes do not need Google: the staging sign-in is the accessKey cookie.
+    import sqlite3
+    try:
+        os.remove(os.path.join(dst, "Cookies-journal"))
+    except OSError:
+        pass
+    if os.path.exists(os.path.join(src, "Cookies")):
+        shutil.copy2(os.path.join(src, "Cookies"), os.path.join(dst, "Cookies"))
+        db = sqlite3.connect(os.path.join(dst, "Cookies"))
+        db.execute("DELETE FROM cookies WHERE host_key NOT LIKE '%observepointstaging.com'")
+        db.commit()
+        db.close()
     if os.path.isdir(os.path.join(src, "Local Storage")):
         shutil.rmtree(os.path.join(dst, "Local Storage"), ignore_errors=True)
         shutil.copytree(os.path.join(src, "Local Storage"), os.path.join(dst, "Local Storage"))

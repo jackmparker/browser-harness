@@ -169,6 +169,97 @@ def _context(target_id):
     return cdp("Target.getTargetInfo", targetId=target_id)["targetInfo"].get("browserContextId")
 
 
+_MAIN_AGENT_CHROME = "http://127.0.0.1:9333"  # run.py: the main agent Chrome, ~/.chrome-agents
+_STAGING = "observepointstaging.com"
+
+
+def _token_exp(token):
+    import base64
+    try:
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))["exp"]
+    except Exception:
+        return 0
+
+
+def _main_cookies():
+    import urllib.request
+    from websockets.sync.client import connect
+    ws_url = json.load(urllib.request.urlopen(f"{_MAIN_AGENT_CHROME}/json/version", timeout=2))["webSocketDebuggerUrl"]
+    with connect(ws_url, open_timeout=2, close_timeout=1) as ws:
+        ws.send(json.dumps({"id": 1, "method": "Storage.getCookies"}))
+        while True:
+            msg = json.loads(ws.recv(timeout=5))
+            if msg.get("id") == 1:
+                return msg["result"]["cookies"]
+
+
+def _delete_cookies(cookies):
+    """Network.deleteCookies does not work on the browser target: write each one again, expired."""
+    keep = ("name", "path", "secure", "httpOnly", "sameSite", "sourceScheme", "sourcePort", "partitionKey")
+    gone = []
+    for c in cookies:
+        entry = {**{k: c[k] for k in keep if k in c}, "value": "", "expires": 1}
+        if c["domain"].startswith("."):
+            entry["domain"] = c["domain"]
+        else:  # a host-only cookie (such as __Host-GAPS): a domain would make a different cookie
+            entry["url"] = f"https://{c['domain']}{c['path']}"
+        gone.append(entry)
+    if gone:
+        cdp("Storage.setCookies", cookies=gone)
+
+
+def _sync_sign_in():
+    """Gives a worktree's agent Chrome the staging sign-in of the main agent Chrome, so one sign-in by
+    the user covers every agent Chrome, also the ones that started before it (2026-11-09: three QA
+    Chromes started before Jack signed in and stayed signed out).
+
+    - Copies only *.observepointstaging.com cookies, and deletes Google cookies here: Google ends the
+      session when its sign-in cookies are in more than one browser (see run.py _copy_sign_in).
+    - Writes the cookies without the https-only (Secure) flag. A sign-in on https staging sets an
+      https-only accessKey, and Chrome does not send it to the local app on http
+      (wtN.localhost.observepointstaging.com:9004), which then goes to Google's sign-in.
+    - Never replaces a sign-in this Chrome made itself, such as "Login as" another account."""
+    if not os.environ.get("BU_AGENT_CHROME_PROFILE", "").startswith(os.path.expanduser("~/.chrome-agents-checkouts") + os.sep):
+        return
+    mine = cdp("Storage.getCookies")["cookies"]
+    try:
+        _delete_cookies([c for c in mine if "google." in c["domain"] or c["domain"].endswith("youtube.com")])
+    except Exception as e:  # never let this block the staging copy below
+        print(f"claim_tab: could not delete the Google cookies: {e}")
+    try:
+        main = [c for c in _main_cookies() if c["domain"].endswith(_STAGING) and not c.get("partitionKey")]
+    except Exception:
+        return  # the main agent Chrome does not run; the copy at start (run.py) is all there is
+    soon = time.time() + 600
+    main_key = next((c["value"] for c in main if c["name"] == "accessKey" and _token_exp(c["value"]) > soon), None)
+    if not main_key:
+        return
+    valid = [c for c in mine if c["name"] == "accessKey" and _token_exp(c["value"]) > soon]
+    if any(not c["secure"] or c["value"] != main_key for c in valid):
+        return  # signed in already, for the local app too, or with its own sign-in
+    _delete_cookies([c for c in mine if c["domain"].endswith(_STAGING)])
+    cookies = []
+    for c in main:
+        secure = c["name"].startswith(("__Secure-", "__Host-"))
+        new = {k: c[k] for k in ("name", "value", "domain", "path", "httpOnly", "priority") if k in c}
+        new["secure"] = secure
+        if c.get("sameSite") and (secure or c["sameSite"] != "None"):
+            new["sameSite"] = c["sameSite"]
+        if not c.get("session") and c.get("expires", -1) > 0:
+            new["expires"] = c["expires"]
+        cookies.append(new)
+    cdp("Storage.setCookies", cookies=cookies)
+
+
+def _try_sync_sign_in():
+    # After _attach(): cdp() calls run in this session's tab, and fail when that tab is gone.
+    try:
+        _sync_sign_in()
+    except Exception as e:
+        print(f"claim_tab: could not copy the staging sign-in from the main agent Chrome: {e}")
+
+
 def claim_tab(url=None):
     """Attach to this session's own window. Call it first in every browser-harness call.
 
@@ -187,6 +278,7 @@ def claim_tab(url=None):
         _take_lock(state["targetId"], True)  # refresh
         _attach(state["targetId"])
         _prepare()
+        _try_sync_sign_in()
         return {"targetId": state["targetId"], "owned": True}
 
     # The agent Chrome (run.py) has one profile, so the window always opens in it.
@@ -196,6 +288,7 @@ def claim_tab(url=None):
     _STATE.write_text(json.dumps(state))
     _attach(tid)
     _prepare()
+    _try_sync_sign_in()  # before the first page loads, which may need the sign-in
     goto_url(url or APP_URL)
     wait_for_load()
     return state
