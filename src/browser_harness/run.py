@@ -291,15 +291,30 @@ def agent_chrome_command(want):
     headless: restarts only when no agent uses it; otherwise at its next start.
     restart: stops the agent Chrome at once (force-stops it when it hangs) and starts it again in
     its mode. Agents that used it get a new window on their next call."""
-    import glob, json, time
+    import glob, json, time, urllib.request
     pids = _agent_chrome_pids()
     running = "not running" if not pids else ("headless" if any("--headless" in a for a in pids.values()) else "headed")
     if want == "status":
         print(f"agent Chrome: set to {_agent_chrome_mode()}, now {running}")
         return 0
     def stop(pids):
+        # Chrome saves new cookies to disk up to 30 seconds late, and a SIGTERM stop drops the
+        # unsaved ones: on 2026-11-09 a staging sign-in made just before a switch to headless was
+        # gone after it. Browser.close shuts Chrome down the normal way, which saves them first.
+        try:
+            from websockets.sync.client import connect
+            ws_url = json.load(urllib.request.urlopen(
+                f"http://127.0.0.1:{AGENT_CHROME_PORT}/json/version", timeout=3))["webSocketDebuggerUrl"]
+            with connect(ws_url, open_timeout=3, close_timeout=1) as ws:
+                ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+            for _ in range(50):
+                if not _agent_chrome_pids():
+                    break
+                time.sleep(0.2)
+        except Exception:
+            pass  # a hung Chrome does not answer; the signals below stop it
         # A hung Chrome ignores SIGTERM (seen on 2026-11-06), so force-stop it after 10 seconds.
-        for pid in pids:
+        for pid in _agent_chrome_pids():
             os.kill(pid, 15)
         for _ in range(50):
             if not _agent_chrome_pids():
@@ -340,13 +355,13 @@ def agent_chrome_command(want):
             return True
         except (OSError, ValueError, TypeError):
             return False
-    import urllib.request
     try:
         pages = {t["id"] for t in json.load(urllib.request.urlopen(f"http://127.0.0.1:{AGENT_CHROME_PORT}/json/list", timeout=3))}
     except Exception:
         pages = set()
-    # A lock file per window that an agent claimed (agent_helpers.claim_tab), named by its target id.
-    busy = sorted({l.get("name", "?") for f in glob.glob("/tmp/bu-tab-locks/*.json")
+    # A lock file per window that an agent claimed (agent_helpers.claim_tab), named by its target id,
+    # in one folder per agent Chrome (/tmp/bu-tab-locks/<BU_NAME>/).
+    busy = sorted({l.get("name", "?") for f in glob.glob(f"/tmp/bu-tab-locks/{os.environ.get('BU_NAME', 'default')}/*.json")
                    if os.path.basename(f)[:-5] in pages and alive((l := json.load(open(f))).get("pid"))})
     if busy and want == "headless":
         print(f"agent Chrome: set to {want}. It restarts that way when it next starts. "
@@ -358,6 +373,14 @@ def agent_chrome_command(want):
         _agent_chrome()
         req = urllib.request.Request(f"http://127.0.0.1:{AGENT_CHROME_PORT}/json/new?{SIGN_IN_URL}", method="PUT")
         urllib.request.urlopen(req, timeout=10).read()
+        # The agent Chrome starts with `open -g`, so the sign-in window opened behind the user's windows
+        # and they could not find it (2026-11-09). A person asked for this window: bring it to the front.
+        import subprocess
+        for pid in _agent_chrome_pids():
+            subprocess.run(["osascript", "-l", "JavaScript", "-e",
+                            f"ObjC.import('AppKit'); $.NSRunningApplication"
+                            f".runningApplicationWithProcessIdentifier({pid}).activateWithOptions(3)"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         print(f"agent Chrome: set to headed. Restarted it with a window at {SIGN_IN_URL}."
               + (f" These agents lost their window and get a new one on their next call: {', '.join(busy)}." if busy else "")
               + " When done: browser-harness --agent-chrome headless")
