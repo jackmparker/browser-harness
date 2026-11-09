@@ -206,6 +206,44 @@ def _main_cookies():
                 return msg["result"]["cookies"]
 
 
+def _cookie_url(c):
+    """The url a host-only cookie came from. Chrome rejects an https url for a cookie with
+    sourceScheme NonSecure ("Invalid cookie fields"), such as op_admin that the local app sets on
+    http://wtN.localhost.observepointstaging.com:9004 (2026-11-09, WORK-38549)."""
+    scheme = "http" if c.get("sourceScheme") == "NonSecure" else "https"
+    port = c.get("sourcePort")
+    port = f":{port}" if port and port not in (80, 443, -1) else ""
+    return f"{scheme}://{c['domain']}{port}{c['path']}"
+
+
+def _set_cookies(cookies):
+    """Storage.setCookies, with an error that names the cookie and the field Chrome rejects.
+    Chrome rejects the whole list and does not say which cookie, so on an error set them one by one."""
+    if not cookies:
+        return
+    try:
+        cdp("Storage.setCookies", cookies=cookies)
+        return
+    except Exception as e:
+        first = e
+    for c in cookies:
+        try:
+            cdp("Storage.setCookies", cookies=[c])
+            continue
+        except Exception:
+            pass
+        where = c.get("domain") or c.get("url")
+        for field in [k for k in c if k not in ("name", "value", "domain", "url")]:
+            try:
+                cdp("Storage.setCookies", cookies=[{k: v for k, v in c.items() if k != field}])
+            except Exception:
+                continue
+            raise RuntimeError(f"{first}: cookie {c['name']} on {where}, field {field}={c[field]!r}") from first
+        fields = {k: v for k, v in c.items() if k != "value"}
+        raise RuntimeError(f"{first}: cookie {c['name']} on {where}, fields {fields}") from first
+    raise first
+
+
 def _delete_cookies(cookies):
     """Network.deleteCookies does not work on the browser target: write each one again, expired."""
     keep = ("name", "path", "secure", "httpOnly", "sameSite", "sourceScheme", "sourcePort", "partitionKey")
@@ -215,10 +253,9 @@ def _delete_cookies(cookies):
         if c["domain"].startswith("."):
             entry["domain"] = c["domain"]
         else:  # a host-only cookie (such as __Host-GAPS): a domain would make a different cookie
-            entry["url"] = f"https://{c['domain']}{c['path']}"
+            entry["url"] = _cookie_url(c)
         gone.append(entry)
-    if gone:
-        cdp("Storage.setCookies", cookies=gone)
+    _set_cookies(gone)
 
 
 def _sync_sign_in():
@@ -261,7 +298,7 @@ def _sync_sign_in():
         if not c.get("session") and c.get("expires", -1) > 0:
             new["expires"] = c["expires"]
         cookies.append(new)
-    cdp("Storage.setCookies", cookies=cookies)
+    _set_cookies(cookies)
 
 
 def _try_sync_sign_in():
