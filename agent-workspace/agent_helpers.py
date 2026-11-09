@@ -33,8 +33,13 @@ def _app_url():
     Each checkout has its own host on port 9004: localhost.observepointstaging.com for the main
     checkout, wtN.localhost.observepointstaging.com for the others."""
     import subprocess
+    # Ask in this agent's worktree (run.py sets BU_AGENT_CHECKOUT also for a call from another
+    # folder). From another folder moonbeam-dev gives no URL, and the agent went to the main
+    # checkout's app with a "main" label in its worktree's Chrome (2026-11-09).
+    cwd = os.environ.get("BU_AGENT_CHECKOUT")
     try:
-        out = subprocess.run(["moonbeam-dev", "url"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["moonbeam-dev", "url"], capture_output=True, text=True, timeout=10,
+                             cwd=cwd if cwd and os.path.isdir(cwd) else None)
         if out.returncode == 0 and out.stdout.strip().startswith("http"):
             return out.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
@@ -112,11 +117,18 @@ def _take_lock(target_id, owned):
 
 # Keeps a label at the start of the tab title, so the user can tell agent windows apart in Chrome's
 # Window menu. The app rewrites the title on every page, so an observer puts the label back.
+# One observer per page, and it reads the label at each change. On 2026-11-09 a page got a second
+# observer with another label ("wt3" and "main"); the two rewrote the title in turn without end, and
+# the whole agent Chrome stopped answering 6 times in 20 minutes.
 _LABEL_JS = """(() => {
-  const label = %s;
-  if (window.__opAgentLabel === label) return;
-  window.__opAgentLabel = label;
-  const fix = () => { if (!document.title.startsWith(label)) document.title = label + document.title.replace(/^(\\u{1F7E2} |\\u{1F916} [^\\u00B7]*\\u00B7 )+/u, ''); };
+  if (window.__opAgentLabel && !window.__opAgentLabelFix) return;  // the older script, which keeps its own label
+  window.__opAgentLabel = %s;
+  const fix = () => {
+    const label = window.__opAgentLabel;
+    if (!document.title.startsWith(label)) document.title = label + document.title.replace(/^(\\u{1F7E2} |\\u{1F916} [^\\u00B7]*\\u00B7 )+/u, '');
+  };
+  if (window.__opAgentLabelFix) return window.__opAgentLabelFix();
+  window.__opAgentLabelFix = fix;
   const watch = () => { fix(); new MutationObserver(fix).observe(document.head, {subtree: true, childList: true, characterData: true}); };
   document.head ? watch() : document.addEventListener('DOMContentLoaded', watch);
 })()"""
