@@ -188,6 +188,27 @@ def _copy_sign_in():
                      os.path.join(AGENT_CHROME_PROFILE, "Local State"))
 
 
+def _keep_session_cookies():
+    """Chrome deletes session cookies (no expiry) each time it starts, and the ObservePoint sign-in
+    (accessKey, user_id, ...) is a session cookie: on 2026-11-10 every sign-in in the agent Chrome was
+    gone after the next start (a switch to headed or headless, a restart). Chrome saved the cookies on
+    exit, so before it starts, give them an expiry of 7 days: it then keeps them as normal cookies.
+    Chrome is not running here, so the file is not in use."""
+    import sqlite3, time
+    path = os.path.join(AGENT_CHROME_PROFILE, "Default", "Cookies")
+    if not os.path.exists(path):
+        return
+    try:
+        db = sqlite3.connect(path, timeout=5)
+        expires = int((time.time() + 7 * 86400 + 11644473600) * 1000000)  # Chrome time: microseconds since 1601
+        db.execute("UPDATE cookies SET has_expires=1, is_persistent=1, expires_utc=? WHERE has_expires=0 "
+                   "AND (host_key LIKE '%observepoint.com' OR host_key LIKE '%observepointstaging.com')", (expires,))
+        db.commit()
+        db.close()
+    except sqlite3.Error:
+        pass  # a locked file only costs the sign-in, as before
+
+
 def _agent_chrome():
     """Starts the agent Chrome, in the background, when it does not run."""
     import socket, subprocess, time
@@ -204,6 +225,7 @@ def _agent_chrome():
     _agent_chrome_app()
     if AGENT_CHROME_PROFILE.startswith(CHECKOUT_CHROME_DIR + os.sep):
         _copy_sign_in()
+    _keep_session_cookies()
     # Chrome empties chrome_debug.log when it starts. Keep the log of the run before (it holds
     # the cause when the agent Chrome crashed), as chrome_debug-<time>.log, and keep the last 5.
     import glob, shutil
