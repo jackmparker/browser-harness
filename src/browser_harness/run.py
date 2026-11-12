@@ -253,7 +253,9 @@ def _agent_chrome():
                     # build accessibility trees for every page. On 2026-11-06 a renderer logged "Accessibility
                     # tree update queue is too big", then the browser hung and crashed. Agents do not need it:
                     # CDP's Accessibility domain still works with this flag (tested).
-                    "--disable-renderer-accessibility"]
+                    "--disable-renderer-accessibility",
+                    # Headless Chrome still plays page audio. On 2026-11-12 the user heard a page in their headphones.
+                    "--mute-audio"]
     if _agent_chrome_mode() == "headless":
         version = _chrome_version(AGENT_CHROME_APP)
         flags += ["--headless=new",

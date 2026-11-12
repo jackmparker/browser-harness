@@ -1,5 +1,6 @@
 import sys
 from io import StringIO
+import unittest.mock
 from unittest.mock import patch
 
 from browser_harness import run
@@ -27,3 +28,23 @@ def test_c_flag_does_not_read_stdin():
         run.main()
 
     assert not stdin_read, "stdin should not be read when -c is passed"
+
+
+def _start_flags(tmp_path, mode):
+    with patch("browser_harness.run.AGENT_CHROME_PROFILE", str(tmp_path)), \
+         patch("browser_harness.run._agent_chrome_app"), \
+         patch("browser_harness.run._keep_session_cookies"), \
+         patch("browser_harness.run._agent_chrome_mode", return_value=mode), \
+         patch("browser_harness.run._chrome_version", return_value="140.0.1.2"), \
+         patch("socket.create_connection", side_effect=[OSError(), unittest.mock.MagicMock()]), \
+         patch("time.sleep"), \
+         patch("subprocess.Popen") as popen, \
+         patch("subprocess.run") as srun:
+        run._agent_chrome()
+    return popen.call_args[0][0] if mode == "headless" else srun.call_args[0][0]
+
+
+def test_agent_chrome_starts_muted(tmp_path):
+    # Agent Chrome pages must never play sound on the user's speakers or headphones.
+    assert "--mute-audio" in _start_flags(tmp_path, "headless")
+    assert "--mute-audio" in _start_flags(tmp_path, "headed")
