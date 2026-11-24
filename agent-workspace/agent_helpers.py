@@ -330,7 +330,8 @@ def claim_tab(url=None):
         _try_sync_sign_in()
         return {"targetId": state["targetId"], "owned": True}
 
-    # The agent Chrome (run.py) has one profile, so the window always opens in it.
+    # The window opens in the profile Chrome used last: the one run.py started (Default, or the
+    # opt-in work profile). In headed mode, a click in a window of another profile changes that.
     tid = cdp("Target.createTarget", url="about:blank", newWindow=True, background=True)["targetId"]
     _take_lock(tid, owned=True)
     state = {"targetId": tid, "owned": True}

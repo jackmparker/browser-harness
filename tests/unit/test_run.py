@@ -48,3 +48,47 @@ def test_agent_chrome_starts_muted(tmp_path):
     # Agent Chrome pages must never play sound on the user's speakers or headphones.
     assert "--mute-audio" in _start_flags(tmp_path, "headless")
     assert "--mute-audio" in _start_flags(tmp_path, "headed")
+
+
+def test_agent_chrome_has_no_profile_flag_without_the_setting(tmp_path, monkeypatch):
+    # Everyone without the opt-in setting keeps the Default profile and the same flags as before.
+    monkeypatch.delenv("BU_AGENT_CHROME_PROFILE_DIRECTORY", raising=False)
+    with patch("browser_harness.run.AGENT_CHROME_PROFILE_DIRECTORY_FILE", str(tmp_path / "missing")):
+        for mode in ("headless", "headed"):
+            assert not [f for f in _start_flags(tmp_path, mode) if f.startswith("--profile-directory")]
+        assert run._profile_directory() == "Default"
+
+
+def test_agent_chrome_opens_the_opt_in_profile(tmp_path, monkeypatch):
+    monkeypatch.delenv("BU_AGENT_CHROME_PROFILE_DIRECTORY", raising=False)
+    setting = tmp_path / "setting"
+    setting.write_text("Profile 2\n")
+    with patch("browser_harness.run.AGENT_CHROME_PROFILE_DIRECTORY_FILE", str(setting)):
+        assert "--profile-directory=Profile 2" in _start_flags(tmp_path, "headless")
+        assert "--profile-directory=Profile 2" in _start_flags(tmp_path, "headed")
+
+
+def test_worktree_chrome_uses_default_with_the_opt_in_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("BU_AGENT_CHROME_PROFILE_DIRECTORY", "Profile 2")
+    checkouts = tmp_path / "checkouts"
+    with patch("browser_harness.run.CHECKOUT_CHROME_DIR", str(checkouts)), \
+         patch("browser_harness.run._copy_sign_in"):
+        flags = _start_flags(checkouts / "wt1", "headless")
+    assert "--profile-directory=Default" in flags
+
+
+def test_copy_sign_in_reads_the_opt_in_profile(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setenv("BU_AGENT_CHROME_PROFILE_DIRECTORY", "Profile 2")
+    main, wt = tmp_path / "main", tmp_path / "wt"
+    (main / "Profile 2").mkdir(parents=True)
+    db = sqlite3.connect(main / "Profile 2" / "Cookies")
+    db.execute("CREATE TABLE cookies (host_key TEXT, name TEXT)")
+    db.executemany("INSERT INTO cookies VALUES (?, ?)",
+                   [("app.observepointstaging.com", "accessKey"), (".google.com", "SID")])
+    db.commit(); db.close()
+    with patch("browser_harness.run.MAIN_AGENT_CHROME_PROFILE", str(main)), \
+         patch("browser_harness.run.AGENT_CHROME_PROFILE", str(wt)):
+        run._copy_sign_in()
+    rows = sqlite3.connect(wt / "Default" / "Cookies").execute("SELECT name FROM cookies").fetchall()
+    assert rows == [("accessKey",)]

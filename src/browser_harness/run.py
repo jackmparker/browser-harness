@@ -85,6 +85,11 @@ AGENT_CHROME_PROFILE = os.path.expanduser(os.environ.get("BU_AGENT_CHROME_PROFIL
 # focus and other apps cannot read its pages. `browser-harness --agent-chrome headed` switches.
 # One mode for all agent Chromes: the main profile's.
 AGENT_CHROME_MODE_FILE = (MAIN_AGENT_CHROME_PROFILE if _LABEL else AGENT_CHROME_PROFILE) + "-mode"
+# Opt-in, for one machine: the main agent Chrome opens the profile folder named in this file (or in
+# BU_AGENT_CHROME_PROFILE_DIRECTORY), for example "Profile 2". With neither set, nothing changes:
+# Chrome opens Default and gets no --profile-directory flag. Use it for a managed work account:
+# Chrome moves such an account out of Default into its own profile when it signs in to Chrome.
+AGENT_CHROME_PROFILE_DIRECTORY_FILE = MAIN_AGENT_CHROME_PROFILE + "-profile-directory"
 CHROME_APP = "/Applications/Google Chrome.app"
 SIGN_IN_URL = "https://master.observepointstaging.com/login"
 # Agents run a renamed copy of Chrome ("Agent Chrome", its own bundle id). With the real app, macOS
@@ -144,6 +149,22 @@ def _agent_chrome_pids():
             if flag in l and "--type=" not in l and l.split(None, 1)[1].startswith((CHROME_BIN, CHROME_APP))}  # CHROME_APP: one started before the copy
 
 
+def _main_profile_directory():
+    """The profile folder of the main agent Chrome: Default unless the opt-in setting names another."""
+    name = os.environ.get("BU_AGENT_CHROME_PROFILE_DIRECTORY")
+    if name is None:
+        try:
+            name = open(AGENT_CHROME_PROFILE_DIRECTORY_FILE).read().strip()
+        except OSError:
+            name = ""
+    return name.strip() or "Default"
+
+
+def _profile_directory():
+    """The profile folder this agent Chrome uses. Worktree Chromes always use Default."""
+    return "Default" if AGENT_CHROME_PROFILE.startswith(CHECKOUT_CHROME_DIR + os.sep) else _main_profile_directory()
+
+
 def _agent_env():
     """Points the daemon at the agent Chrome. Returns False when the caller chose another browser:
     an explicit BU_CDP_URL or BU_CDP_WS wins (set BU_CDP_URL= to an empty value to use the user's Chrome)."""
@@ -159,7 +180,7 @@ def _copy_sign_in():
     """A worktree's agent Chrome starts with the staging sign-in of the main agent Chrome: its
     cookies and local storage, copied at each start (Chrome is not running then)."""
     import shutil
-    src = os.path.join(MAIN_AGENT_CHROME_PROFILE, "Default")
+    src = os.path.join(MAIN_AGENT_CHROME_PROFILE, _main_profile_directory())
     dst = os.path.join(AGENT_CHROME_PROFILE, "Default")
     os.makedirs(dst, exist_ok=True)
     # Copy only the staging cookies, never the Google sign-in. Google ends the whole Google session
@@ -195,7 +216,7 @@ def _keep_session_cookies():
     exit, so before it starts, give them an expiry of 7 days: it then keeps them as normal cookies.
     Chrome is not running here, so the file is not in use."""
     import sqlite3, time
-    path = os.path.join(AGENT_CHROME_PROFILE, "Default", "Cookies")
+    path = os.path.join(AGENT_CHROME_PROFILE, _profile_directory(), "Cookies")
     if not os.path.exists(path):
         return
     try:
@@ -256,6 +277,10 @@ def _agent_chrome():
                     "--disable-renderer-accessibility",
                     # Headless Chrome still plays page audio. On 2026-11-12 the user heard a page in their headphones.
                     "--mute-audio"]
+    if _main_profile_directory() != "Default":
+        # Only with the opt-in setting. A worktree Chrome gets Default here: it copies the main
+        # Local State, which names the main profile as the last one used.
+        flags.append(f"--profile-directory={_profile_directory()}")
     if _agent_chrome_mode() == "headless":
         version = _chrome_version(AGENT_CHROME_APP)
         flags += ["--headless=new",
